@@ -533,6 +533,9 @@ export default function App() {
               <div className="absolute top-2 left-2 bg-slate-950/80 p-1 px-1.5 rounded border border-slate-800 font-mono text-[8px] text-slate-400">
                 {senderUploadedImage ? "BENUTZER-TRÄGERBILD" : "KEIN BILD"}
               </div>
+              <div className="absolute top-2 right-2 bg-amber-500 text-slate-950 font-bold px-2 py-1 rounded shadow-lg text-[9px] animate-pulse pointer-events-none">
+                ⬇ LANGE DRÜCKEN ZUM SPEICHERN (HANDY)
+              </div>
             </div>
 
             <div className="text-xs text-slate-400 leading-relaxed font-mono bg-slate-950/40 p-3 rounded-lg border border-slate-900">
@@ -549,21 +552,56 @@ export default function App() {
                 animate={{ opacity: 1, scale: 1 }}
                 className="space-y-3 bg-amber-500/5 border border-amber-500/20 p-4 rounded-xl"
               >
-                <div className="flex items-center gap-2 text-amber-500 text-xs font-semibold">
-                  <Sparkles className="h-4 w-4" />
-                  Botschaft erfolgreich eingebettet!
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex items-center gap-2 text-amber-500 text-sm font-bold">
+                    <Sparkles className="h-4 w-4" />
+                    Bildeinbettung abgeschlossen!
+                  </div>
+                  <div className="text-[11px] text-slate-300 font-medium">
+                    <strong className="text-amber-500">WICHTIG FÜR HANDY-NUTZER:</strong><br/>
+                    Drücke im Bild oben LANGE auf das Bild und wähle <b>"In Fotos sichern"</b> oder <b>"Bild herunterladen"</b>. Browser blockieren oft den automatischen Download!
+                  </div>
                 </div>
                 
-                <div className="flex flex-col gap-2">
+                <div className="flex flex-col gap-2 pt-2">
                   {/* Download button */}
-                  <a
-                    href={embeddedImage}
-                    download={`cryptsign_stego_${Date.now()}.png`}
+                  <button
+                    onClick={async () => {
+                      if (!embeddedImage) return;
+                      try {
+                        const res = await fetch(embeddedImage);
+                        const blob = await res.blob();
+                        const file = new File([blob], `cryptsign_${Date.now()}.png`, { type: 'image/png' });
+                        
+                        // 1. Mobile Web Share API versuchen
+                        if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+                          await navigator.share({
+                            files: [file],
+                            title: 'CryptSign Image'
+                          });
+                        } else {
+                          // 2. Fallback: direkter Download über Base64-Data-URI
+                          const a = document.createElement("a");
+                          a.style.display = "none";
+                          a.href = embeddedImage;
+                          a.download = `cryptsign_${Date.now()}.png`;
+                          document.body.appendChild(a);
+                          a.click();
+                          setTimeout(() => document.body.removeChild(a), 500);
+                          
+                          // Alert to prompt manual long press just in case it silently fails.
+                          setTimeout(() => alert("Falls nichts passiert: Bitte direkt auf das große Bild oben drücken (lange halten) und 'Speichern' wählen."), 800);
+                        }
+                      } catch (err: any) {
+                        console.error("Download Error", err);
+                        alert("Automatischer Download blockiert. Bitte drücke LANGE auf das generierte Bild oben und wähle 'In Fotos sichern' oder 'Bild herunterladen'.");
+                      }
+                    }}
                     className="w-full py-2.5 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center justify-center gap-1.5 shadow"
                   >
                     <Download className="h-3.5 w-3.5" />
-                    Bespieltes PNG herunterladen
-                  </a>
+                    Teilen / Automatisch Speichern versuchen
+                  </button>
 
                   {/* Transfer to Decoder workflow */}
                   <button
