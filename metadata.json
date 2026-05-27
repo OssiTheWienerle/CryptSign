@@ -1,0 +1,6 @@
+{
+  "name": "CryptSign",
+  "description": "Ein sicheres, lokales und offline-fähiges Steganographie-System zur absolut anonymen Text-Einbettung in Bilder.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
