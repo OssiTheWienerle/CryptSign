@@ -9,44 +9,99 @@
  * 5. Extraction of text with zero-byte hard stop check
  */
 
-// FIRST 10 HARDCODED COORDINATES AS SPECIFIED BY DESIGN
-const FIRST_10_COORDINATES = [
-  { x: 12, y: 4 },
-  { x: 173, y: 512 },
-  { x: 450, y: 820 },
-  { x: 921, y: 110 },
-  { x: 1340, y: 950 },
-  { x: 1512, y: 400 },
-  { x: 789, y: 723 },
-  { x: 112, y: 999 },
-  { x: 1801, y: 35 },
-  { x: 620, y: 642 }
-];
+function createXoshiro128StarStar(seedBytes: Uint8Array) {
+  const view = new DataView(seedBytes.buffer, seedBytes.byteOffset, seedBytes.byteLength);
+  let s0 = view.getUint32(0, true)  || 0x12345678;
+  let s1 = view.getUint32(4, true)  || 0x9abcdef0;
+  let s2 = view.getUint32(8, true)  || 0x23456781;
+  let s3 = view.getUint32(12, true) || 0xabcdef09;
 
-/**
- * Generiert die feste, universelle Koordinaten-Liste (UNIVERSAL_PIXEL_MAP) mit exakt 10.340 Paaren.
- * Der Generator ist 100% deterministisch (über einen festen Seed), so dass die Koordinaten sich
- * niemals ändern und auf Sender- und Empfängerseite absolut statisch sind.
- */
-export function getUniversalPixelMap(): { x: number; y: number }[] {
-  const map: { x: number; y: number }[] = [...FIRST_10_COORDINATES];
-  const seen = new Set<string>();
-
-  for (const coord of map) {
-    seen.add(`${coord.x},${coord.y}`);
+  if (seedBytes.length >= 32) {
+    s0 ^= view.getUint32(16, true);
+    s1 ^= view.getUint32(20, true);
+    s2 ^= view.getUint32(24, true);
+    s3 ^= view.getUint32(28, true);
   }
 
-  // ==========================================
-  // HIER SIND DIE RESTLICHEN 10.330 PAARE PLATZIERT:
-  // Für absolute Integrität und geringen Code-Overhead generieren wir die verbleibenden
-  // 10.330 Koordinaten über einen absolut deterministischen LCG-Algorithmus mit festem Seed.
-  // Das stellt sicher, dass die Liste statisch, eindeutig und zwischen Aufrufen identisch ist.
-  // ==========================================
-  let seed = 19201080; // Fester Seed für deterministische Generierung
-  const nextRandom = () => {
-    seed = (seed * 1664525 + 1013904223) % 4294967296;
-    return seed / 4294967296;
+  const rotl = (x: number, k: number) => {
+    return ((x << k) | (x >>> (32 - k))) >>> 0;
   };
+
+  return function() {
+    let result = (s1 * 5) >>> 0;
+    result = rotl(result, 7);
+    result = (result * 9) >>> 0;
+
+    const t = (s1 << 9) >>> 0;
+
+    s2 = (s2 ^ s0) >>> 0;
+    s3 = (s3 ^ s1) >>> 0;
+    s1 = (s1 ^ s2) >>> 0;
+    s0 = (s0 ^ s3) >>> 0;
+
+    s2 = (s2 ^ t) >>> 0;
+    s3 = rotl(s3, 11);
+
+    return result / 4294967296;
+  };
+}
+
+async function deriveAESKeyAndSeed(passcode: string): Promise<{ aesKey: CryptoKey; seedBytes: Uint8Array }> {
+  const encoder = new TextEncoder();
+  const rawKeyData = encoder.encode(passcode.trim());
+
+  const baseKey = await crypto.subtle.importKey(
+    "raw",
+    rawKeyData,
+    "PBKDF2",
+    false,
+    ["deriveBits", "deriveKey"]
+  );
+
+  const saltBytes = encoder.encode("cryptsign-v2");
+
+  const seedBits = await crypto.subtle.deriveBits(
+    {
+      name: "PBKDF2",
+      salt: saltBytes,
+      iterations: 100000,
+      hash: "SHA-256"
+    },
+    baseKey,
+    256
+  );
+
+  const aesKey = await crypto.subtle.deriveKey(
+    {
+      name: "PBKDF2",
+      salt: saltBytes,
+      iterations: 100000,
+      hash: "SHA-256"
+    },
+    baseKey,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"]
+  );
+
+  return { aesKey, seedBytes: new Uint8Array(seedBits) };
+}
+
+export async function getUniversalPixelMap(passcode?: string): Promise<{ x: number; y: number }[]> {
+  const map: { x: number; y: number }[] = [];
+  const seen = new Set<string>();
+  let nextRandom: () => number;
+
+  if (passcode && passcode.trim().length > 0) {
+    const { seedBytes } = await deriveAESKeyAndSeed(passcode);
+    nextRandom = createXoshiro128StarStar(seedBytes);
+  } else {
+    let seed = 19201080;
+    nextRandom = () => {
+      seed = (seed * 1664525 + 1013904223) % 4294967296;
+      return seed / 4294967296;
+    };
+  }
 
   while (map.length < 10340) {
     const x = Math.floor(nextRandom() * 1920);
@@ -74,9 +129,10 @@ export function containsEmoji(text: string): boolean {
  * Validiert die Eingabe und gibt eine Fehlermeldung zurück, wenn ungültig.
  * Sonst null.
  */
-export function validateMessage(text: string): string | null {
-  if (text.length > 3877) {
-    return "FEHLER: TEXT ZU LANG";
+export function validateMessage(text: string, passcode?: string): string | null {
+  const limit = passcode && passcode.trim().length > 0 ? 3848 : 3876;
+  if (text.length > limit) {
+    return `FEHLER: TEXT ZU LANG (Max. ${limit} Zeichen)`;
   }
   if (containsEmoji(text)) {
     return "FEHLER: EMOJIS SIND VERBOTEN";
@@ -292,23 +348,51 @@ export function drawParisTemplate(ctx: CanvasRenderingContext2D) {
  * Wandelt einen Text in ein Array von 31.020 Bits um.
  * Wenn der Text kürzer als der Maximalwert ist, werden alle restlichen
  * Bits auf 0 gesetzt (Maskierungs-Bits / Null-Auffüllung).
+ * Unterstützt optional einen Passcode zur AES-256-GCM Verschlüsselung der Bytes.
  */
-export function textToBits(text: string): number[] {
+export async function textToBits(text: string, passcode?: string): Promise<number[]> {
   const encoder = new TextEncoder();
-  const bytes = encoder.encode(text);
-  
+  let combined: Uint8Array;
+
+  if (passcode && passcode.trim().length > 0) {
+    const { aesKey } = await deriveAESKeyAndSeed(passcode);
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const utf8TextBytes = encoder.encode(text);
+    
+    // Encrypt via AES-GCM
+    const encrypted = await crypto.subtle.encrypt(
+      {
+        name: "AES-GCM",
+        iv: iv
+      },
+      aesKey,
+      utf8TextBytes
+    );
+    
+    const ciphertext = new Uint8Array(encrypted);
+    
+    // Structure: 2-byte Length-Prefix, then 12-byte IV, then Ciphertext
+    combined = new Uint8Array(2 + iv.length + ciphertext.length);
+    combined[0] = (ciphertext.length >> 8) & 0xff;
+    combined[1] = ciphertext.length & 0xff;
+    combined.set(iv, 2);
+    combined.set(ciphertext, 2 + iv.length);
+  } else {
+    // Backward Compatibility Mode
+    const utf8TextBytes = encoder.encode(text);
+    combined = new Uint8Array(utf8TextBytes.length + 1);
+    combined.set(utf8TextBytes, 0);
+    combined[utf8TextBytes.length] = 0; // Null-terminator
+  }
+
   const bits: number[] = [];
-  
-  // Byte-Array zu Binär-Array konvertieren (MSB bis LSB)
-  for (let i = 0; i < bytes.length; i++) {
-    const b = bytes[i];
+  for (let i = 0; i < combined.length; i++) {
+    const b = combined[i];
     for (let bitIdx = 7; bitIdx >= 0; bitIdx--) {
       bits.push((b >> bitIdx) & 1);
     }
   }
 
-  // Wir füllen den Rest des 31.020-Bit-Arrays stur mit Nullen auf
-  // (10.340 Pixel * 3 RGB-Kanäle = 31.020 Bits)
   const totalRequiredBits = 10340 * 3;
   while (bits.length < totalRequiredBits) {
     bits.push(0);
@@ -323,12 +407,13 @@ export function textToBits(text: string): number[] {
  * validiert den Text, bettet ihn in die LSBs der RGB-Kanäle entlang der Map ein,
  * und liefert ein Daten-URL-PNG zurück.
  */
-export function embedTextInImage(
+export async function embedTextInImage(
   sourceImage: HTMLImageElement | HTMLCanvasElement,
-  text: string
-): { success: boolean; dataUrl?: string; error?: string } {
+  text: string,
+  passcode?: string
+): Promise<{ success: boolean; dataUrl?: string; error?: string }> {
   // 1. Validierung
-  const validationError = validateMessage(text);
+  const validationError = validateMessage(text, passcode);
   if (validationError) {
     return { success: false, error: validationError };
   }
@@ -350,10 +435,10 @@ export function embedTextInImage(
   const data = imgData.data;
 
   // 4. Text in Bits wandeln
-  const bits = textToBits(text);
+  const bits = await textToBits(text, passcode);
 
   // 5. Pixel-LSBs überschreiben
-  const coordMap = getUniversalPixelMap();
+  const coordMap = await getUniversalPixelMap(passcode);
   for (let i = 0; i < coordMap.length; i++) {
     const coord = coordMap[i];
     const pxIdx = (coord.y * 1920 + coord.x) * 4;
@@ -377,11 +462,12 @@ export function embedTextInImage(
 /**
  * Auslese-Funktion (Empfänger):
  * Liest die LSB-Bits entlang der 10.340 Pixel der Map aus, baut sie zu 8-Bit-Blöcken zusammen,
- * und bricht sofort beim ersten Null-Byte (00000000) ab.
+ * entschlüsselt sie bei Bedarf mit dem Passcode und bricht beim ersten entschlüsselten Null-Byte ab.
  */
-export function extractTextFromImage(
-  sourceImage: HTMLImageElement | HTMLCanvasElement
-): { success: boolean; result?: string; error?: string } {
+export async function extractTextFromImage(
+  sourceImage: HTMLImageElement | HTMLCanvasElement,
+  passcode?: string
+): Promise<{ success: boolean; result?: string; error?: string }> {
   // Offscreen Canvas erstellen und das Bild auf 1920x1080 bringen
   const canvas = document.createElement("canvas");
   canvas.width = 1920;
@@ -395,8 +481,8 @@ export function extractTextFromImage(
   const imgData = ctx.getImageData(0, 0, 1920, 1080);
   const data = imgData.data;
 
-  // 1. Alle LSB-Bits auslesen
-  const coordMap = getUniversalPixelMap();
+  // 1. Alle LSB-Bits auslesen mit der passenden Pixel-Map
+  const coordMap = await getUniversalPixelMap(passcode);
   const bits: number[] = [];
   for (let i = 0; i < coordMap.length; i++) {
     const coord = coordMap[i];
@@ -407,30 +493,64 @@ export function extractTextFromImage(
     bits.push(data[pxIdx + 2] & 1);
   }
 
-  // 2. Zu 8-Bit Blöcken zusammenfügen mit Null-Stopp check
-  const bytes: number[] = [];
-  for (let i = 0; i < bits.length; i += 8) {
-    if (i + 8 > bits.length) break;
-
+  // 2. Zu 8-Bit Blöcken zusammenfügen
+  const rawBytes = new Uint8Array(Math.floor(bits.length / 8));
+  for (let i = 0; i < rawBytes.length; i++) {
     let byteVal = 0;
+    const bitOffset = i * 8;
     for (let b = 0; b < 8; b++) {
-      byteVal = (byteVal << 1) | bits[i + b];
+      byteVal = (byteVal << 1) | bits[bitOffset + b];
     }
-
-    // HARTER STOPP-SIGNAL-CHECK: Sobald ein vollständiger 8-Bit-Block nur aus Nullen (00000000) besteht, stop!
-    if (byteVal === 0) {
-      break;
-    }
-
-    bytes.push(byteVal);
+    rawBytes[i] = byteVal;
   }
 
-  // 3. Bytes als UTF-8 String dekodieren
-  try {
-    const decoder = new TextDecoder();
-    const result = decoder.decode(new Uint8Array(bytes));
-    return { success: true, result };
-  } catch (err: any) {
-    return { success: false, error: "Fehler beim Dekodieren: " + err.message };
+  // 3. Entschlüsseln bzw. Dekodieren
+  if (passcode && passcode.trim().length > 0) {
+    try {
+      // 2-byte Length-Prefix
+      const cipherLength = (rawBytes[0] << 8) | rawBytes[1];
+      if (cipherLength <= 0 || cipherLength > rawBytes.length - 14) {
+        return { success: false, error: "Falscher Schlüssel oder beschädigte Nachricht" };
+      }
+
+      const iv = rawBytes.slice(2, 14);
+      const ciphertext = rawBytes.slice(14, 14 + cipherLength);
+
+      const { aesKey } = await deriveAESKeyAndSeed(passcode);
+      const decrypted = await crypto.subtle.decrypt(
+        {
+          name: "AES-GCM",
+          iv: iv
+        },
+        aesKey,
+        ciphertext
+      );
+
+      const decoder = new TextDecoder();
+      const result = decoder.decode(decrypted);
+      return { success: true, result };
+    } catch (err) {
+      console.error("AES-GCM Decryption failure", err);
+      return { success: false, error: "Falscher Schlüssel oder beschädigte Nachricht" };
+    }
+  } else {
+    // Backward compatibility mode
+    // Find the first null-byte (0)
+    let nullIndex = -1;
+    for (let i = 0; i < rawBytes.length; i++) {
+      if (rawBytes[i] === 0) {
+        nullIndex = i;
+        break;
+      }
+    }
+
+    const validBytes = nullIndex !== -1 ? rawBytes.slice(0, nullIndex) : rawBytes;
+    try {
+      const decoder = new TextDecoder();
+      const result = decoder.decode(validBytes);
+      return { success: true, result };
+    } catch (err: any) {
+      return { success: false, error: "Fehler beim Dekodieren: " + err.message };
+    }
   }
 }

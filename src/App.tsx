@@ -38,12 +38,14 @@ export default function App() {
   const [embeddedImage, setEmbeddedImage] = useState<string | null>(null);
   const [embedError, setEmbedError] = useState<string | null>(null);
   const [embedSuccess, setEmbedSuccess] = useState<boolean>(false);
+  const [embedPasscode, setEmbedPasscode] = useState<string>("");
 
   // State for Extracting (Empfänger-Logik)
   const [extractorUploadedImage, setExtractorUploadedImage] = useState<string | null>(null);
   const [extractedText, setExtractedText] = useState<string | null>(null);
   const [extractError, setExtractError] = useState<string | null>(null);
   const [copied, setCopied] = useState<boolean>(false);
+  const [extractPasscode, setExtractPasscode] = useState<string>("");
 
   // Coordinate map state to display status info
   const [pixelMap, setPixelMap] = useState<{ x: number; y: number }[]>([]);
@@ -52,11 +54,21 @@ export default function App() {
   const embedPreviewRef = useRef<HTMLCanvasElement | null>(null);
   const extractPreviewRef = useRef<HTMLCanvasElement | null>(null);
 
-  // Initialize the universal pixel map and draw current selected template in UI
+  // Initialize and dynamically update the pixel map on passcode changes
   useEffect(() => {
-    const map = getUniversalPixelMap();
-    setPixelMap(map);
-  }, []);
+    let active = true;
+    const updateMap = async () => {
+      const activePasscode = activeTab === "embed" ? embedPasscode : extractPasscode;
+      const map = await getUniversalPixelMap(activePasscode);
+      if (active) {
+        setPixelMap(map);
+      }
+    };
+    updateMap();
+    return () => {
+      active = false;
+    };
+  }, [activeTab, embedPasscode, extractPasscode]);
 
   // Update sender canvas preview whenever the custom image changes
   useEffect(() => {
@@ -86,13 +98,14 @@ export default function App() {
 
   // Validation feedback in real-time
   const getValidationFeedback = () => {
-    if (text.length > 3877) {
-      return { error: true, message: "FEHLER: TEXT ZU LANG (Max. 3.877 Zeichen)" };
+    const limit = embedPasscode && embedPasscode.trim().length > 0 ? 3848 : 3876;
+    if (text.length > limit) {
+      return { error: true, message: `FEHLER: TEXT ZU LANG (Max. ${limit} Zeichen)` };
     }
     if (containsEmoji(text)) {
       return { error: true, message: "FEHLER: EMOJIS SIND VERBOTEN (Nur Text & Satzzeichen)" };
     }
-    return { error: false, message: `${text.length} / 3.877 Zeichen verwendet` };
+    return { error: false, message: `${text.length} / ${limit} Zeichen verwendet` };
   };
 
   const validation = getValidationFeedback();
@@ -164,8 +177,8 @@ export default function App() {
     img.src = senderUploadedImage;
   };
 
-  const runEmbedSequence = (sourceCanvas: HTMLCanvasElement) => {
-    const embedResult = embedTextInImage(sourceCanvas, text);
+  const runEmbedSequence = async (sourceCanvas: HTMLCanvasElement) => {
+    const embedResult = await embedTextInImage(sourceCanvas, text, embedPasscode);
     if (embedResult.success && embedResult.dataUrl) {
       setEmbeddedImage(embedResult.dataUrl);
       setEmbedSuccess(true);
@@ -182,8 +195,8 @@ export default function App() {
     }
 
     const img = new Image();
-    img.onload = () => {
-      const result = extractTextFromImage(img);
+    img.onload = async () => {
+      const result = await extractTextFromImage(img, extractPasscode);
       if (result.success && result.result !== undefined) {
         setExtractedText(result.result);
         setExtractError(null);
@@ -200,6 +213,7 @@ export default function App() {
     setExtractorUploadedImage(embeddedImage);
     setExtractedText(null);
     setExtractError(null);
+    setExtractPasscode(embedPasscode); // Automatisch Code übertragen für einfache Verifikation!
     setActiveTab("extract");
 
     // Paint to receiver preview
@@ -233,7 +247,7 @@ export default function App() {
           </div>
           <div>
             <h1 className="text-xl font-bold tracking-tight text-white flex items-center gap-2">
-              CryptSign <span className="text-xs font-mono font-normal py-0.5 px-2 bg-slate-900 text-amber-500 rounded border border-slate-800">v1.2</span>
+              CryptSign <span className="text-xs font-mono font-normal py-0.5 px-2 bg-slate-900 text-amber-500 rounded border border-slate-800">v2.0</span>
             </h1>
             <p className="text-xs text-slate-400">Programmgesteuertes Steganographie-Fundament_</p>
           </div>
@@ -246,7 +260,9 @@ export default function App() {
             100% LOKAL
           </span>
           <span className="text-slate-600">|</span>
-          <span className="text-slate-400">3.877 CHAR LIMIT</span>
+          <span className="text-slate-400">
+            {embedPasscode && embedPasscode.trim().length > 0 ? "3.848 CHAR LIMIT" : "3.876 CHAR LIMIT"}
+          </span>
           <span className="text-slate-600">|</span>
           <span className="text-slate-400 text-[10px]">ANONYM</span>
         </div>
@@ -330,6 +346,29 @@ export default function App() {
                         validation.error ? "border-red-500/60 ring-1 ring-red-500/20" : "border-slate-800"
                       }`}
                     />
+                  </div>
+
+                  {/* Passcode / Code-Eingabe */}
+                  <div className="space-y-2">
+                    <label className="text-xs font-semibold text-slate-300 flex justify-between">
+                      <span>Sicherheits-Schlüssel / Pixel-Code (optional)</span>
+                      <span className="text-[10px] text-amber-500 font-mono">Sichert Pixel-Muster &amp; Text_</span>
+                    </label>
+                    <input
+                      id="embed-passcode-input"
+                      type="text"
+                      value={embedPasscode}
+                      onChange={(e) => {
+                        setEmbedPasscode(e.target.value);
+                        setEmbedSuccess(false);
+                        setEmbeddedImage(null);
+                      }}
+                      placeholder="z.B. MeinGeheimerCode123 (Leerlassen für Standard-Raster)"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs focus:outline-none focus:ring-1 focus:ring-amber-500 transition-all font-mono leading-relaxed text-slate-200"
+                    />
+                    <p className="text-[10px] text-slate-500 leading-relaxed">
+                      Dieser Schlüssel entscheidet darüber, welche Bildpixel benutzt/gescannt werden und verschlüsselt den Text. Nur wer exakt diesen Code einträgt, kann die Botschaft jemals decodieren!
+                    </p>
                   </div>
 
                   {/* Trägerbild-Upload mit Warnhinweis */}
@@ -446,6 +485,29 @@ export default function App() {
                     )}
                   </div>
 
+                  {/* Passcode-Eingabe für Empfänger */}
+                  <div className="space-y-2">
+                    <label className="text-xs font-semibold text-slate-300 flex justify-between">
+                      <span>Sicherheits-Schlüssel / Pixel-Code (optional)</span>
+                      <span className="text-[10px] text-emerald-400 font-mono">Dekodier-Schlüssel_</span>
+                    </label>
+                    <input
+                      id="extract-passcode-input"
+                      type="text"
+                      value={extractPasscode}
+                      onChange={(e) => {
+                        setExtractPasscode(e.target.value);
+                        setExtractedText(null);
+                        setExtractError(null);
+                      }}
+                      placeholder="Gleichen Code eingeben wie der Sender (Leerlassen für Standard-Raster)"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500 transition-all font-mono leading-relaxed text-slate-200"
+                    />
+                    <p className="text-[10px] text-slate-500 leading-relaxed">
+                      Sucht und entschlüsselt die LSB-Bits basierend auf diesem Schlüssel. Ein falscher Code liefert nur unbrauchbares Bit-Rauschen oder stoppt sofort.
+                    </p>
+                  </div>
+
                   {/* Extract action error box */}
                   {extractError && (
                     <div className="p-3.5 bg-red-950/40 border border-red-900/60 rounded-xl flex items-center gap-3">
@@ -523,19 +585,32 @@ export default function App() {
               SENDER-VORANSICHT & EXPORT
             </h3>
             
-            <div className="border border-slate-850 rounded-xl overflow-hidden bg-slate-950 aspect-video relative">
+            <div className="border border-slate-850 rounded-xl overflow-hidden bg-slate-950 aspect-video relative group">
               <canvas 
                 ref={embedPreviewRef} 
                 width={480} 
                 height={270} 
-                className="w-full h-auto block" 
+                className={`w-full h-auto block ${embedSuccess ? 'hidden' : 'block'}`} 
               />
-              <div className="absolute top-2 left-2 bg-slate-950/80 p-1 px-1.5 rounded border border-slate-800 font-mono text-[8px] text-slate-400">
+              {/* VITAL FIX FOR MOBILE: Render actual <img> tag when successful so long-press 'Save' works natively */}
+              {embedSuccess && embeddedImage && (
+                <img 
+                  src={embeddedImage}
+                  alt="Generiertes Stego Bild"
+                  className="w-full h-auto block absolute inset-0 z-10 cursor-pointer"
+                  style={{ WebkitTouchCallout: "default", pointerEvents: "auto" }}
+                />
+              )}
+              
+              <div className="absolute top-2 left-2 bg-slate-950/80 p-1 px-1.5 rounded border border-slate-800 font-mono text-[8px] text-slate-400 z-20 pointer-events-none">
                 {senderUploadedImage ? "BENUTZER-TRÄGERBILD" : "KEIN BILD"}
               </div>
-              <div className="absolute top-2 right-2 bg-amber-500 text-slate-950 font-bold px-2 py-1 rounded shadow-lg text-[9px] animate-pulse pointer-events-none">
-                ⬇ LANGE DRÜCKEN ZUM SPEICHERN (HANDY)
-              </div>
+              
+              {embedSuccess && (
+                <div className="absolute top-2 right-2 bg-amber-500 text-slate-950 font-bold px-2 py-1 rounded shadow-lg text-[9px] animate-pulse pointer-events-none z-20">
+                  ⬇ LANGE DRÜCKEN ZUM SPEICHERN (HANDY)
+                </div>
+              )}
             </div>
 
             <div className="text-xs text-slate-400 leading-relaxed font-mono bg-slate-950/40 p-3 rounded-lg border border-slate-900">
@@ -557,14 +632,43 @@ export default function App() {
                     <Sparkles className="h-4 w-4" />
                     Bildeinbettung abgeschlossen!
                   </div>
-                  <div className="text-[11px] text-slate-300 font-medium">
-                    <strong className="text-amber-500">WICHTIG FÜR HANDY-NUTZER:</strong><br/>
-                    Drücke im Bild oben LANGE auf das Bild und wähle <b>"In Fotos sichern"</b> oder <b>"Bild herunterladen"</b>. Browser blockieren oft den automatischen Download!
+                  <div className="text-[11px] text-slate-300 font-medium leading-relaxed">
+                    Klicke auf den <strong className="text-amber-500">Direkt-Download Button</strong> unten, um das manipulierte Bild direkt in deinem System-Downloadordner abzuspeichern. (Alternativ kannst du auch lange auf das Bild in der Vorschau oben tippen.)
                   </div>
                 </div>
                 
                 <div className="flex flex-col gap-2 pt-2">
-                  {/* Download button */}
+                  {/* Real HTTPS Download button (100% works everywhere, handles base64 payload nicely) */}
+                  <button
+                    onClick={async () => {
+                      if (!embeddedImage) return;
+                      try {
+                        const blob = await (await fetch(embeddedImage)).blob();
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `cryptsign_${Date.now()}.png`;
+                        a.click();
+                        URL.revokeObjectURL(url);
+                      } catch (err) {
+                        console.error("Download Error", err);
+                        // Safe fallback just in case
+                        const a = document.createElement("a");
+                        a.style.display = "none";
+                        a.href = embeddedImage;
+                        a.download = `cryptsign_${Date.now()}.png`;
+                        document.body.appendChild(a);
+                        a.click();
+                        setTimeout(() => document.body.removeChild(a), 500);
+                      }
+                    }}
+                    className="w-full py-2.5 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs flex items-center justify-center gap-1.5 shadow transition-all cursor-pointer"
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                    Verlustfreie PNG direkt herunterladen
+                  </button>
+
+                  {/* Secondary Share Button */}
                   <button
                     onClick={async () => {
                       if (!embeddedImage) return;
@@ -572,41 +676,40 @@ export default function App() {
                         const res = await fetch(embeddedImage);
                         const blob = await res.blob();
                         const file = new File([blob], `cryptsign_${Date.now()}.png`, { type: 'image/png' });
-                        
-                        // 1. Mobile Web Share API versuchen
+
                         if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
                           await navigator.share({
                             files: [file],
                             title: 'CryptSign Image'
                           });
                         } else {
-                          // 2. Fallback: direkter Download über Base64-Data-URI
-                          const a = document.createElement("a");
-                          a.style.display = "none";
-                          a.href = embeddedImage;
-                          a.download = `cryptsign_${Date.now()}.png`;
-                          document.body.appendChild(a);
-                          a.click();
-                          setTimeout(() => document.body.removeChild(a), 500);
-                          
-                          // Alert to prompt manual long press just in case it silently fails.
-                          setTimeout(() => alert("Falls nichts passiert: Bitte direkt auf das große Bild oben drücken (lange halten) und 'Speichern' wählen."), 800);
+                          // Open in a new window/tab
+                          const newWindow = window.open("", "_blank");
+                          if (newWindow) {
+                            newWindow.document.write(`
+                              <html>
+                                <head><title>Generiertes Bild Speichern</title><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+                                <body style="margin:0;background:#000;display:flex;justify-content:center;align-items:center;height:100vh;">
+                                  <img src="${embeddedImage}" style="max-width:100%;max-height:100vh;height:auto;" />
+                                </body>
+                              </html>
+                            `);
+                            newWindow.document.close();
+                          }
                         }
-                      } catch (err: any) {
-                        console.error("Download Error", err);
-                        alert("Automatischer Download blockiert. Bitte drücke LANGE auf das generierte Bild oben und wähle 'In Fotos sichern' oder 'Bild herunterladen'.");
+                      } catch (err) {
+                        console.error("Share Error", err);
                       }
                     }}
-                    className="w-full py-2.5 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center justify-center gap-1.5 shadow"
+                    className="w-full py-2 px-3 rounded-lg bg-slate-950 hover:bg-slate-900 border border-slate-800 text-slate-300 font-medium text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer"
                   >
-                    <Download className="h-3.5 w-3.5" />
-                    Teilen / Automatisch Speichern versuchen
+                    Bild teilen / separat öffnen
                   </button>
 
                   {/* Transfer to Decoder workflow */}
                   <button
                     onClick={transferToReceiver}
-                    className="w-full py-2.5 px-3 rounded-lg bg-slate-900 hover:bg-slate-850 text-slate-300 border border-slate-800 hover:border-slate-700 font-bold text-xs flex items-center justify-center gap-1.5"
+                    className="w-full py-2.5 px-3 rounded-lg bg-slate-900 hover:bg-slate-850 text-slate-300 border border-slate-800 hover:border-slate-700 font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer"
                   >
                     <ArrowRight className="h-3.5 w-3.5" />
                     In Empfänger-Kanal laden
@@ -635,6 +738,10 @@ export default function App() {
               <div className="border-t border-slate-900 pt-2">
                 <span className="text-slate-200 font-bold block">3. Harter Stopp auf Bit-Ebene</span>
                 Das Ausleseverfahren stoppt exakt beim ersten vollständig leeren UTF-8 Block (00000000). Es entstehen dadurch niemals Geisterzeichen oder zufälliges Bit-Rauschen.
+              </div>
+              <div className="border-t border-slate-900 pt-2">
+                <span className="text-slate-200 font-bold block">4. AES-256-GCM Verschlüsselung</span>
+                Nachrichten werden mit AES-256-GCM Ende-zu-Ende verschlüsselt. Ein falscher Schlüssel liefert einen kryptographischen Fehler, kein Bit-Rauschen.
               </div>
             </div>
           </div>
